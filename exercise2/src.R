@@ -131,9 +131,30 @@ residuals_distributions <- map2(models, models_res_norm,
 )
 grid.arrange(grobs = residuals_distributions)
 
-# create out-of-sample predictions
+# create out-of-sample predictions and errors
 predictions <- map(models, ~ predict(., test_data))
 prediction_errors <- map(predictions, ~ . - test_data$baa10y)
+
+
+# prediction metrics
+calculate_mae <- function(errors) {
+    return(mean(abs(errors)))
+}
+calculate_rmse <- function(errors) {
+    return((mean(errors^2))^(1/2))
+}
+calculate_mape <- function(y_true, y_pred) {
+    return(mean(abs(y_pred - y_true) / y_true))
+}
+
+prediction_metrics <- rbind(
+    unlist(map(prediction_errors, ~ calculate_mae(.))),
+    unlist(map(prediction_errors, ~ calculate_rmse(.))),
+    unlist(map(predictions, ~ calculate_mape(test_data$baa10y, .)))
+)
+rownames(prediction_metrics) <- c('MAE', 'RMSE', 'MAPE')
+stargazer(prediction_metrics, summary = FALSE, rownames = TRUE)
+
 
 # inspect prediction errors
 prediction_errors_norm <- map(prediction_errors, ~ .get_norm_dist_approx(.))
@@ -158,13 +179,16 @@ prediction_errors_normality <- rbind(
     map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$p.value)
 )
 rownames(res_normality) <- c('Statistic', 'p-value')
-stargazer(res_normality, summary = FALSE)
+stargazer(res_normality, summary = FALSE, rownames = TRUE)
 
 pred_df <- data.frame(matrix(unlist(predictions), ncol = length(predictions), byrow = FALSE))
 colnames(pred_df) <- names(models)
 pred_err_df <- data.frame(matrix(unlist(prediction_errors), ncol = length(prediction_errors), byrow = FALSE))
 colnames(pred_err_df) <- str_c(names(models), 'err', sep = '_')
 
+
+
+# specification tests - regressions to 'explain' pred errors
 prediction_analysis <- cbind(test_data, pred_df, pred_err_df)
 
 
