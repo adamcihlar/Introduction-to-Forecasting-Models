@@ -187,8 +187,59 @@ pred_err_df <- data.frame(matrix(unlist(prediction_errors), ncol = length(predic
 colnames(pred_err_df) <- str_c(names(models), 'err', sep = '_')
 
 
-
-# specification tests - regressions to 'explain' pred errors
+# specification tests - regressions to 'explain' prediction errors
 prediction_analysis <- cbind(test_data, pred_df, pred_err_df)
+colnames(prediction_analysis)
+
+spectest_formulas <- list(
+    M1_spectest = formula(I(M1_err ~ t10y3m_1^2 + VIX_1^2 + (t10y3m_1:VIX_1))),
+    M2_spectest = formula(I(M2_err ~ VIX_1^2)),
+    M3_spectest = formula(I(M3_err ~ t10y3m_1^2 + VIX_1^2 + t10y3m_2^2 + VIX_2^2 +
+                  (t10y3m_1:VIX_1) + (t10y3m_1:t10y3m_2) + (t10y3m_1:VIX_2) + 
+                  (t10y3m_2:VIX_1) + (t10y3m_2:VIX_2) + 
+                  (VIX_1:VIX_2)))
+)
+spectest_models <- map(spectest_formulas, ~ lm(., prediction_analysis))
+stargazer(spectest_models)
 
 
+# serial correlation test of prediction erros
+pred_err_df_ext <- cbind(
+    pred_err_df,
+    rbind(NA, pred_err_df[1:(nrow(pred_err_df) - 1), ]),
+    rbind(NA, NA, pred_err_df[1:(nrow(pred_err_df) - 2), ]),
+    rbind(NA, NA, NA, pred_err_df[1:(nrow(pred_err_df) - 3), ])
+)
+
+colnames(pred_err_df_ext) <- c(
+    names(pred_err_df),
+    str_c(names(pred_err_df), '1', sep = '_'),
+    str_c(names(pred_err_df), '2', sep = '_'),
+    str_c(names(pred_err_df), '3', sep = '_')
+)
+
+autocorrtest_formulas <- 
+    list(
+        M1_err_autocorr = formula(M1_err ~ M1_err_1 + M1_err_2 + M1_err_3),
+        M2_err_autocorr = formula(M2_err ~ M2_err_1 + M2_err_2 + M2_err_3),
+        M3_err_autocorr = formula(M3_err ~ M3_err_1 + M3_err_2 + M3_err_3)
+    )
+
+autocorrtest_models <- map(autocorrtest_formulas, ~ lm(., pred_err_df_ext))
+stargazer(autocorrtest_models)
+
+# plot out-of-sample predictions
+predictions_dfs <- map(predictions, ~ tibble(pred = ., Date = test_data$Date, y_true = test_data$baa10y))
+predictions_plots <- map2(predictions_dfs, names(predictions_dfs),
+    ~ ggplot(data = .x, mapping = aes(x=Date, y=y_true, group = 1)) +
+            geom_line(color = 'navyblue') +
+            geom_line(mapping = aes(x=Date, y=pred), color = 'skyblue3') +
+            theme_bw() +
+            scale_x_date(
+                name = element_blank(), 
+                date_minor_breaks = "1 year", 
+                limits = c(as.Date("2021-01-01"), as.Date("2022-01-01"))) +
+            scale_y_continuous(name = .y,
+                               limits = c(1.5, 3))
+)
+grid.arrange(grobs = predictions_plots)
