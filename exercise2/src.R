@@ -1,127 +1,170 @@
 rm(list = ls())
 
 library(tidyverse)
-library(rollRegres)
-library(quantmod)
-library(lubridate)
+library(readxl)
+library(zoo)
+library(stargazer)
+library(gridExtra)
+library(tseries)
 
 
-.from_date <- '2016-01-01'
-#.to_date <- '2021-02-28'
-.to_date <- '2021-12-31'
+data <- read_xlsx('../data/Credit Spreads.xlsx') %>%
+    mutate(Date = as.Date(Date))
 
-.stockmarket <- '^NDX'
-.symbols <- c('AAPL','GOOGL')
 
-### Functions
+# plot data
+data %>% ggplot(mapping = aes(x=Date, y=baa10y, group = 1)) +
+        geom_line(color = 'steelblue') +
+        geom_line(mapping = aes(x=Date, y=t10y3m), color = 'firebrick') +
+        theme_bw() +
+        scale_x_date(
+            name = element_blank(), 
+            date_minor_breaks = "1 year", 
+            limits = c(as.Date("2018-01-01"), as.Date("2022-01-01"))) +
+        scale_y_continuous(name = "Return",
+                           limits = c(-1, 5))
 
-.select_and_filter <- function(title_df, from,  to, only_filter = FALSE) {
+data %>% ggplot(mapping = aes(x=Date, y=VIX, group = 1)) +
+        geom_line(color = 'darkblue') +
+        theme_bw() +
+        scale_x_date(
+            name = element_blank(), 
+            date_minor_breaks = "1 year", 
+            limits = c(as.Date("2018-01-01"), as.Date("2022-01-01"))) +
+        scale_y_continuous(name = "Value")
+
+# add lagged variables
+data <- data %>%
+    mutate(t10y3m_1 = dplyr::lag(t10y3m, n = 1),
+           t10y3m_2 = dplyr::lag(t10y3m, n = 2),
+           VIX_1 = dplyr::lag(VIX, n = 1),
+           VIX_2 = dplyr::lag(VIX, n = 2))
+
+# train, test split
+train_data <- data %>%
+    filter(Date < '2021-01-01')
+
+test_data <- data %>%
+    filter(Date >= '2021-01-01')
+
+# define and estimate models
+models_formulas <- list(M1 = formula(baa10y ~ t10y3m_1 + VIX_1),
+               M2 = formula(baa10y ~ VIX_1),
+               M3 = formula(baa10y ~ t10y3m_1 + VIX_1 + t10y3m_2 + VIX_2))
+
+models <- map(models_formulas, ~ lm(., train_data))
+
+# basic info about models
+stargazer(models$M1, models$M2, models$M3)
+
+# create tibbles with true, fitted and residuals for plotting
+true_est_res <- map(models, ~ tibble(
+    Date = train_data$Date[(length(train_data$Date)-length(.$residuals)+1):length(train_data$Date)],
+    y = .$model$baa10y,
+    y_hat = .$fitted.values,
+    e = .$residuals)
+    )
+
+estimates_plots <- map2(true_est_res, names(true_est_res),
+    ~ ggplot(data = .x, mapping = aes(x=Date, y=y, group = 1)) +
+            geom_line(color = 'navyblue') +
+            geom_line(mapping = aes(x=Date, y=y_hat), color = 'skyblue3') +
+            theme_bw() +
+            scale_x_date(
+                name = element_blank(), 
+                date_minor_breaks = "1 year", 
+                limits = c(as.Date("2018-01-01"), as.Date("2021-01-01"))) +
+            scale_y_continuous(name = .y,
+                               limits = c(1, 5))
+)
+grid.arrange(grobs = estimates_plots)
     
-    if (only_filter) {
-        result <- title_df %>%
-            as_tibble(rownames = 'date') %>%                        # index to column
-            mutate(date = as_date(date),
-                   year_month = format(date, format = "%Y-%m")) %>% # convert
-            filter(date >= from, date <= to)                        # filter
-        
-    } else {
-        
-        # get list of last trading days in months of the particular company
-        last_trading_day <- title_df %>%
-            as_tibble(rownames = 'date') %>%                        # index to column
-            mutate(date = as_date(date)) %>%                        # convert
-            select(date, contains('.Close')) %>%                    # select cols
-            drop_na() %>%                                           # drop rows with missing values
-            filter(date >= from, date <= to) %>%                    # filter date
-            mutate(year_month = format(date, format = "%Y-%m-%d")) %>% # substract year-month
-            group_by(year_month) %>%                                # group by months
-            summarise(last_day = max(date))                         # get last days
-        
-        # inner join last days with values to get last  
-        result <- title_df %>%
-            as_tibble(rownames = 'date') %>%
-            mutate(date = as_date(date)) %>%
-            inner_join(last_trading_day, by = c('date' = 'last_day')) %>%
-            select(date, year_month, contains('.Close'))
-    }
-    return(result)
+residuals_plots <-  map2(true_est_res, names(true_est_res),
+    ~ ggplot(data = .x, mapping = aes(x=Date, y=e, group = 1)) +
+        geom_line(color = 'firebrick') +
+        geom_hline(yintercept = 0, linetype = 'longdash', color = 'grey10') +
+        theme_bw() +
+        scale_x_date(
+            name = element_blank(), 
+            date_minor_breaks = "1 year", 
+            limits = c(as.Date("2018-01-01"), as.Date("2021-01-01"))) +
+        scale_y_continuous(name = .y)
+)
+grid.arrange(grobs = residuals_plots)
+
+
+# residuals inspection
+res_normality <- rbind(
+    map_dfc(models, ~ tseries::jarque.bera.test(.$residuals)$statistic),
+    map_dfc(models, ~ tseries::jarque.bera.test(.$residuals)$p.value)
+)
+rownames(res_normality) <- c('Statistic', 'p-value')
+stargazer(res_normality, summary = FALSE)
+
+.get_norm_dist_approx <- function(data) {
+    normdist <- data_frame(
+        w = seq(
+            from = min(data), 
+            to = max(data), 
+            length.out = length(data)
+            ), 
+        z = map_dbl(w, ~ dnorm(.,
+                               mean = mean(data, na.rm = TRUE),
+                               sd = sd(data, na.rm = TRUE)))
+        )
 }
 
-.get_perc_growth <- function(title_df, r_index_j_m = 'j') {
-    
-    r_ind <- paste('r_', r_index_j_m, sep = '')
-    
-    result <- title_df %>%
-        mutate(diff_log = unlist(log(.[,3]) - dplyr::lag(log(.[,3]), n = 1))) %>% # proc se z toho udelal list v ramci tibblu netusim
-        #select(year_month, contains('diff_log'))
-        select(2:4)
-    
-    colnames(result) <- c('date', 'val', r_ind)
-    result$date <- as.Date(result$date)
-    
-    return(result)
-}
+models_res_norm <- map(models, ~ .get_norm_dist_approx(.$residuals))
+residuals_distributions <- map2(models, models_res_norm,
+     ~ .x$residuals %>%
+         as_tibble() %>%
+         ggplot(aes(x = value)) +
+         geom_histogram(aes(y = ..density..),
+                        bins = 61, alpha=0.8, fill='firebrick', colour='black') +
+         geom_line(data = .y,
+                   aes(x = w, y = z),
+                   color = "darkred",
+                   size = 1) +
+         theme_bw() +
+         theme(axis.title.y=element_blank()) +
+         theme(axis.title.x=element_blank())
+)
+grid.arrange(grobs = residuals_distributions)
 
-getSymbols(Symbols = .symbols,
-           src = 'yahoo')
+# create out-of-sample predictions
+predictions <- map(models, ~ predict(., test_data))
+prediction_errors <- map(predictions, ~ . - test_data$baa10y)
 
-titles <- ls(all.names = FALSE)
+# inspect prediction errors
+prediction_errors_norm <- map(prediction_errors, ~ .get_norm_dist_approx(.))
+prediction_errors_distributions <- map2(prediction_errors, prediction_errors_norm,
+     ~ .x %>%
+         as_tibble() %>%
+         ggplot(aes(x = value)) +
+         geom_histogram(aes(y = ..density..),
+                        bins = 61, alpha=0.8, fill='firebrick', colour='black') +
+         geom_line(data = .y,
+                   aes(x = w, y = z),
+                   color = "darkred",
+                   size = 1) +
+         theme_bw() +
+         theme(axis.title.y=element_blank()) +
+         theme(axis.title.x=element_blank())
+)
+grid.arrange(grobs = prediction_errors_distributions)
 
-full_list <- map(titles, ~ eval(as.name(.)))# prochazi promennou titels, ty ktere se uspesne stahly, 
-# se jako stringy sypou do eval(as.name(.)) 
-# -> vyhodnoti string jako kus kodu
-names(full_list) <- titles  # pojmenovat casti listu
+prediction_errors_normality <- rbind(
+    map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$statistic),
+    map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$p.value)
+)
+rownames(res_normality) <- c('Statistic', 'p-value')
+stargazer(res_normality, summary = FALSE)
 
-stock_returns <- map(full_list, ~ .select_and_filter(title_df = ., 
-                                                     from = .from_date, 
-                                                     to = .to_date, 
-                                                     only_filter = FALSE)) %>%
-    map(., ~ .get_perc_growth(title_df = .,
-                              r_index_j_m = 'j')) %>%
-    map(., drop_na)
+pred_df <- data.frame(matrix(unlist(predictions), ncol = length(predictions), byrow = FALSE))
+colnames(pred_df) <- names(models)
+pred_err_df <- data.frame(matrix(unlist(prediction_errors), ncol = length(prediction_errors), byrow = FALSE))
+colnames(pred_err_df) <- str_c(names(models), 'err', sep = '_')
 
-# create tibble with returns
-returns <- stock_returns$AAPL %>%
-    inner_join(stock_returns$GOOGL, by = 'date') %>%
-    select(date, Apple = r_j.x, Google = r_j.y)
-
-# rolling regression with 300 samples window
-# Apple explained by Google
-rollregression <- roll_regres(Apple ~ Google, returns, width = 300,
-                       do_compute = c("sigmas", "r.squareds", "1_step_forecasts"))
+prediction_analysis <- cbind(test_data, pred_df, pred_err_df)
 
 
-# plot 'Google' coefficient variation in time
-rollregression$coefs %>%
-    as_tibble(.) %>%
-    cbind(returns$date) %>%
-    as_tibble() %>%
-    rename(c(intercept = `(Intercept)`, date = `returns$date`)) %>%
-    #mutate(Google = replace_na(Google, 0), intercept = replace_na(intercept, 0))%>%
-    drop_na() %>%
-    ggplot(mapping = aes(x = date, y = Google, group = 1)) +
-    geom_line() +
-    scale_x_date(name = element_blank(), date_minor_breaks = "1 year", limits = c(as.Date("2016-01-01"), as.Date("2022-01-01"))) +
-    ylim(0, 1) +
-    theme_bw()
-
-# plot 1 step prediction error
-rollregression$one_step_forecasts %>%
-    as_tibble() %>%
-    cbind(returns$Apple, returns$date) %>%
-    rename(c(predicted = value, y = `returns$Apple`, date = `returns$date`)) %>%
-    mutate(err = predicted - y) %>%
-    drop_na() %>%
-    ggplot(mapping = aes(x = date, y = err, group = 1)) +
-    geom_line() +
-    scale_x_date(name = element_blank(), date_minor_breaks = "1 year", limits = c(as.Date("2016-01-01"), as.Date("2022-01-01"))) +
-    theme_bw()
-
-# my own rolling regression, almost ready to convert to function
-# performace of course worse than in rollRegres package, but still ok
-window <- 300
-steps <- nrow(returns) - 300 + 1
-mod <- map(seq(from = 1, by = 1, length.out = steps), ~ lm(Apple ~ Google, returns[(0+.):(window+.),]))
-
-last_fitted_values <- map_dfr(mod, ~ .$fitted.values[length(.$fitted.values)])
-betas <- map_dfr(mod, ~ .$coefficients)
