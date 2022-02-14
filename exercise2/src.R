@@ -13,16 +13,23 @@ data <- read_xlsx('../data/Credit Spreads.xlsx') %>%
 
 
 # plot data
-data %>% ggplot(mapping = aes(x=Date, y=baa10y, group = 1)) +
-        geom_line(color = 'steelblue') +
-        geom_line(mapping = aes(x=Date, y=t10y3m), color = 'firebrick') +
+colors <- c("BAA10Y" = "steelblue", "T10Y3M" = "firebrick")
+
+data %>% ggplot(mapping = aes(x=Date, group = 1)) +
+        geom_line(mapping = aes(y=baa10y, color = 'BAA10Y')) +
+        geom_line(mapping = aes(x=Date, y=t10y3m, color = 'T10Y3M')) +
         theme_bw() +
         scale_x_date(
             name = element_blank(), 
             date_minor_breaks = "1 year", 
             limits = c(as.Date("2018-01-01"), as.Date("2022-01-01"))) +
-        scale_y_continuous(name = "Return",
-                           limits = c(-1, 5))
+        scale_y_continuous(name = element_blank(),
+                           limits = c(-1, 5)) +
+        labs(color = element_blank()) +
+        scale_color_manual(values = colors) +
+        theme(legend.position = c(0.88, 0.89),
+              legend.text = element_text(size=11),
+              legend.background = element_blank())
 
 data %>% ggplot(mapping = aes(x=Date, y=VIX, group = 1)) +
         geom_line(color = 'darkblue') +
@@ -67,8 +74,8 @@ true_est_res <- map(models, ~ tibble(
 
 estimates_plots <- map2(true_est_res, names(true_est_res),
     ~ ggplot(data = .x, mapping = aes(x=Date, y=y, group = 1)) +
-            geom_line(color = 'navyblue') +
-            geom_line(mapping = aes(x=Date, y=y_hat), color = 'skyblue3') +
+            geom_line(color = 'navyblue', size = 1.01) +
+            geom_line(mapping = aes(x=Date, y=y_hat), color = 'skyblue4') +
             theme_bw() +
             scale_x_date(
                 name = element_blank(), 
@@ -178,8 +185,8 @@ prediction_errors_normality <- rbind(
     map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$statistic),
     map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$p.value)
 )
-rownames(res_normality) <- c('Statistic', 'p-value')
-stargazer(res_normality, summary = FALSE, rownames = TRUE)
+rownames(prediction_errors_normality) <- c('Statistic', 'p-value')
+stargazer(prediction_errors_normality, summary = FALSE, rownames = TRUE)
 
 pred_df <- data.frame(matrix(unlist(predictions), ncol = length(predictions), byrow = FALSE))
 colnames(pred_df) <- names(models)
@@ -232,7 +239,7 @@ stargazer(autocorrtest_models)
 predictions_dfs <- map(predictions, ~ tibble(pred = ., Date = test_data$Date, y_true = test_data$baa10y))
 predictions_plots <- map2(predictions_dfs, names(predictions_dfs),
     ~ ggplot(data = .x, mapping = aes(x=Date, y=y_true, group = 1)) +
-            geom_line(color = 'navyblue') +
+            geom_line(color = 'navyblue', size=1.01) +
             geom_line(mapping = aes(x=Date, y=pred), color = 'skyblue3') +
             theme_bw() +
             scale_x_date(
