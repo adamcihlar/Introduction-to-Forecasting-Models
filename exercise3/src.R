@@ -1,4 +1,6 @@
 
+dev.off()
+rm(list = ls())
 setwd('C:/Users/Adam Cihláø/Desktop/materiály/ForecastingModels/assignments/exercise3')
 
 library(tidyverse)
@@ -6,6 +8,9 @@ library(readxl)
 library(mltools)
 library(data.table)
 library(gridExtra)
+library(leaps)
+library(stargazer)
+
 
 data <- read_xls(path = '../data/Sales new cars US.xls', skip = 10) %>%
     mutate(observation_date = as.Date(observation_date),
@@ -17,6 +22,7 @@ data <- read_xls(path = '../data/Sales new cars US.xls', skip = 10) %>%
            y_2 = dplyr::lag(y, n = 2),
            y_3 = dplyr::lag(y, n = 3),
            y_4 = dplyr::lag(y, n = 4),
+           y_12 = dplyr::lag(y, n = 12),
            )
 
 data$m <- as.factor(data$m)
@@ -31,30 +37,29 @@ test_data <- data %>%
 
 # formula trend only
 trend_formula <- 'TOTALNSA ~ time_index + time_index_2'
-trend_m <- lm(formula = TOTALNSA ~ time_index + time_index_2, train_data)
-summary(trend_m)
 
 # formula seasonality
-form <- str_c(unlist(colnames(train_data)[4:(length(names(train_data))-3)]), colapse = ' + ')
+form <- str_c(unlist(colnames(train_data)[4:13]), colapse = ' + ')
 season_formula <- str_c(
-    c('TOTALNSA ~ ' , str_c(form, collapse = ''), names(train_data)[length(train_data)-2]), 
+    c('TOTALNSA ~ ' , str_c(form, collapse = ''), names(train_data)[14]), 
     collapse = '')
-season_m <- lm(formula = season_formula, data = train_data)
-summary(season_m)
 
 # formula trend + seasonality
 trend_season_formula <- str_c(season_formula, 'time_index', 'time_index_2', sep = ' + ')
-trend_season_m <- lm(formula = trend_season_formula, data = train_data)
-summary(trend_season_m)
+model_to_determine_AR <- lm(trend_season_formula, data = train_data)
 
 # formula trend + seasonality + cycle (AR)
-trend_season_cycle_formula <- str_c(trend_season_formula, 'y_1', 'y_2', 'y_3', sep = ' + ')
+# inspect the residuals to determine AR process
+acf(model_to_determine_AR$residuals)
+pacf(model_to_determine_AR$residuals)
+# use AR 4 process + 12 (makes sense with the monthly data)
+trend_season_cycle_formula <- str_c(trend_season_formula, 'y_1', 'y_2', 'y_3', 'y_4', 'y_12', sep = ' + ')
 
 formulas <- list(
-    trend = trend_formula,
-    season = season_formula,
-    trend_season = trend_season_formula,
-    trend_season_cycle = trend_season_cycle_formula
+    `T` = trend_formula,
+    `S` = season_formula,
+    `T+S` = trend_season_formula,
+    `T+S+C` = trend_season_cycle_formula
 )
 
 models <- map(formulas, ~ lm(., train_data))
@@ -67,6 +72,7 @@ true_est_res <- map(models, ~ tibble(
     e = .$residuals)
     )
 
+# plot how the models fot the train data
 estimates_plots <- map2(true_est_res, names(true_est_res),
     ~ ggplot(data = .x, mapping = aes(x=Date, y=y, group = 1)) +
             geom_line(color = 'navyblue', size = 1) +
@@ -76,6 +82,11 @@ estimates_plots <- map2(true_est_res, names(true_est_res),
             scale_y_continuous(name = .y)
 )
 grid.arrange(grobs = estimates_plots)
+
+# inspect models
+map(models, ~ summary(.))
+map(models, ~ AIC(.))
+map(models, ~ BIC(.))
 
 
 # create out-of-sample predictions and errors
@@ -99,12 +110,13 @@ prediction_metrics <- rbind(
     unlist(map(predictions, ~ calculate_mape(test_data$TOTALNSA, .)))
 )
 rownames(prediction_metrics) <- c('MAE', 'RMSE', 'MAPE')
+stargazer(prediction_metrics, summary = FALSE, rownames = TRUE)
 
 
-
-# inspect the residuals
-map(models, ~ acf(.$residuals))
-map(models, ~ pacf(.$residuals))
+# inspect the residuals again
+par(mfrow = c(2,2))
+acfs <- map(models, ~ acf(.$residuals))
+pacfs <- map(models, ~ pacf(.$residuals))
 
 # residuals inspection
 .get_norm_dist_approx <- function(data) {
@@ -121,6 +133,7 @@ map(models, ~ pacf(.$residuals))
 }
 
 
+# in-sample residuals plot
 models_res_norm <- map(models, ~ .get_norm_dist_approx(.$residuals))
 residuals_distributions <- map2(models, models_res_norm,
      ~ .x$residuals %>%
@@ -139,17 +152,78 @@ residuals_distributions <- map2(models, models_res_norm,
 grid.arrange(grobs = residuals_distributions)
            
 
+# inspect prediction errors
+prediction_errors_norm <- map(prediction_errors, ~ .get_norm_dist_approx(.))
+prediction_errors_distributions <- map2(prediction_errors, prediction_errors_norm,
+     ~ .x %>%
+         as_tibble() %>%
+         ggplot(aes(x = value)) +
+         geom_histogram(aes(y = ..density..),
+                        bins = 61, alpha=0.8, fill='firebrick', colour='black') +
+         geom_line(data = .y,
+                   aes(x = w, y = z),
+                   color = "darkred",
+                   size = 1) +
+         geom_vline(xintercept = 0, color = 'orange', linetype = 'longdash', size = 1.02) +
+         theme_bw() +
+         theme(axis.title.x=element_blank()) +
+         scale_x_continuous(limits = c(-600, 600))
+)
+prediction_errors_distributions <- map2(prediction_errors_distributions, c('T', 'S', 'T + S', 'T + S + C'),
+                                        ~ .x + scale_y_continuous(name = .y))
+grid.arrange(grobs = prediction_errors_distributions)
 
+prediction_errors_normality <- rbind(
+    map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$statistic),
+    map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$p.value)
+)
+rownames(prediction_errors_normality) <- c('Statistic', 'p-value')
+stargazer(prediction_errors_normality, summary = FALSE, rownames = TRUE)
 
+# plot out-of-sample predictions
+predictions_dfs <- map(predictions, ~ tibble(pred = ., Date = test_data$observation_date, y_true = test_data$y))
+predictions_plots <- map2(predictions_dfs, names(predictions_dfs),
+    ~ ggplot(data = .x, mapping = aes(x=Date, y=y_true, group = 1)) +
+            geom_line(color = 'navyblue', size=1.01) +
+            geom_line(mapping = aes(x=Date, y=pred), color = 'skyblue3') +
+            theme_bw() +
+            scale_x_date(
+                name = element_blank(), 
+                date_minor_breaks = "1 year", 
+                limits = c(as.Date("2015-01-01"), as.Date("2022-01-01"))) +
+            scale_y_continuous(name = .y)
+)
+grid.arrange(grobs = predictions_plots)
 
-# automatically by what is ready in R
-time_series <- ts(train_data[,2], start = train_data[1,1], frequency = 12)
-components <- decompose(time_series)
-plot(components)
-components$seasonal
-components$trend
+pred_df <- data.frame(matrix(unlist(predictions), ncol = length(predictions), byrow = FALSE))
+colnames(pred_df) <- names(models)
+pred_err_df <- data.frame(matrix(unlist(prediction_errors), ncol = length(prediction_errors), byrow = FALSE))
+colnames(pred_err_df) <- str_c(names(models), 'err', sep = '_')
+colnames(pred_err_df) <- c('T_err', 'S_err', 'TS_err', 'TSC_err')
 
-components$random %>%
-    as_tibble() %>%
-    ggplot(mapping = aes(x = `x - seasonal`, y = ..density..)) +
-    geom_histogram()
+# serial correlation test of prediction erros
+pred_err_df_ext <- cbind(
+    pred_err_df,
+    rbind(NA, pred_err_df[1:(nrow(pred_err_df) - 1), ]),
+    rbind(NA, NA, pred_err_df[1:(nrow(pred_err_df) - 2), ]),
+    rbind(NA, NA, NA, pred_err_df[1:(nrow(pred_err_df) - 3), ])
+)
+
+colnames(pred_err_df_ext) <- c(
+    names(pred_err_df),
+    str_c(names(pred_err_df), '1', sep = '_'),
+    str_c(names(pred_err_df), '2', sep = '_'),
+    str_c(names(pred_err_df), '3', sep = '_')
+)
+
+autocorrtest_formulas <- 
+    list(
+        T_err_autocorr = formula(T_err ~ T_err_1 + T_err_2 + T_err_3),
+        S_err_autocorr = formula(S_err ~ S_err_1 + S_err_2 + S_err_3),
+        `T + S_err_autocorr` = formula(TS_err ~ TS_err_1 + TS_err_2 + TS_err_3),
+        `T + S + C_err_autocorr` = formula(TSC_err ~ TSC_err_1 + TSC_err_2 + TSC_err_3)
+    )
+
+autocorrtest_models <- map(autocorrtest_formulas, ~ lm(., pred_err_df_ext))
+map(autocorrtest_models, ~ summary(.))
+stargazer(autocorrtest_models)
