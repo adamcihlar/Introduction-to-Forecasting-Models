@@ -28,9 +28,20 @@ data <- read_xls(path = '../data/Sales new cars US.xls', skip = 10) %>%
 data$m <- as.factor(data$m)
 data <- as_tibble(one_hot(as.data.table(data)))
 
+# plot the original time series
+data %>% ggplot(mapping = aes(x = observation_date, y = TOTALNSA, group = 1)) +
+        geom_line(color = 'darkblue') +
+        theme_bw() +
+        scale_x_date(
+            name = element_blank(), 
+            date_minor_breaks = "1 year", 
+            limits = c(as.Date("1976-01-01"), as.Date("2022-01-01"))) +
+        scale_y_continuous(limits = c(0, max(data$TOTALNSA)*1.1))
+
 # split to train and test 
 train_data <- data %>%
-    filter(observation_date < '2015-01-01')
+    filter(observation_date < '2015-01-01') %>%
+    drop_na()
 
 test_data <- data %>%
     filter(observation_date >= '2015-01-01')
