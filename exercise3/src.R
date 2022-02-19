@@ -100,8 +100,12 @@ grid.arrange(grobs = estimates_plots, ncol = 1)
 
 # inspect models
 map(models, ~ summary(.))
-map(models, ~ AIC(.))
-map(models, ~ BIC(.))
+fit_metrics <- rbind(
+    map_dbl(models, ~ AIC(.)),
+    map_dbl(models, ~ BIC(.))
+)
+rownames(fit_metrics) <- c('AIC', 'BIC')
+stargazer(fit_metrics, summary = FALSE, rownames = TRUE)
 
 # create out-of-sample predictions and errors
 predictions <- map(models, ~ predict(., test_data))
@@ -185,7 +189,7 @@ prediction_errors_distributions <- map2(prediction_errors, prediction_errors_nor
 )
 prediction_errors_distributions <- map2(prediction_errors_distributions, c('T', 'S', 'T + S', 'T + S + C'),
                                         ~ .x + scale_y_continuous(name = .y))
-grid.arrange(grobs = prediction_errors_distributions)
+grid.arrange(grobs = prediction_errors_distributions, ncol = 1)
 
 prediction_errors_normality <- rbind(
     map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$statistic),
@@ -207,7 +211,7 @@ predictions_plots <- map2(predictions_dfs, names(predictions_dfs),
                 limits = c(as.Date("2015-01-01"), as.Date("2022-01-01"))) +
             scale_y_continuous(name = .y)
 )
-grid.arrange(grobs = predictions_plots)
+grid.arrange(grobs = predictions_plots, ncol = 1)
 
 pred_df <- data.frame(matrix(unlist(predictions), ncol = length(predictions), byrow = FALSE))
 colnames(pred_df) <- names(models)
