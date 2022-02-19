@@ -23,6 +23,7 @@ data <- read_xls(path = '../data/Sales new cars US.xls', skip = 10) %>%
            y_3 = dplyr::lag(y, n = 3),
            y_4 = dplyr::lag(y, n = 4),
            y_12 = dplyr::lag(y, n = 12),
+           y_13 = dplyr::lag(y, n = 13),
            )
 
 data$m <- as.factor(data$m)
@@ -36,7 +37,8 @@ data %>% ggplot(mapping = aes(x = observation_date, y = TOTALNSA, group = 1)) +
             name = element_blank(), 
             date_minor_breaks = "1 year", 
             limits = c(as.Date("1976-01-01"), as.Date("2022-01-01"))) +
-        scale_y_continuous(limits = c(0, max(data$TOTALNSA)*1.1))
+        scale_y_continuous(limits = c(0, max(data$TOTALNSA)*1.1),
+                           name = element_blank())
 
 # split to train and test 
 train_data <- data %>%
@@ -64,7 +66,8 @@ model_to_determine_AR <- lm(trend_season_formula, data = train_data)
 acf(model_to_determine_AR$residuals)
 pacf(model_to_determine_AR$residuals)
 # use AR 4 process + 12 (makes sense with the monthly data)
-trend_season_cycle_formula <- str_c(trend_season_formula, 'y_1', 'y_2', 'y_3', 'y_4', 'y_12', sep = ' + ')
+trend_season_cycle_formula <- str_c(trend_season_formula, 'y_1', 'y_2', 'y_3', 'y_4', 'y_12', 'y_13',
+                                    sep = ' + ')
 
 formulas <- list(
     `T` = trend_formula,
@@ -74,6 +77,7 @@ formulas <- list(
 )
 
 models <- map(formulas, ~ lm(., train_data))
+stargazer(models)
 
 # create tibbles with true, fitted and residuals for plotting
 true_est_res <- map(models, ~ tibble(
@@ -83,22 +87,21 @@ true_est_res <- map(models, ~ tibble(
     e = .$residuals)
     )
 
-# plot how the models fot the train data
+# plot how the models fit the train data
 estimates_plots <- map2(true_est_res, names(true_est_res),
     ~ ggplot(data = .x, mapping = aes(x=Date, y=y, group = 1)) +
             geom_line(color = 'navyblue', size = 1) +
-            geom_line(mapping = aes(x=Date, y=y_hat), color = 'skyblue4') +
+            geom_line(mapping = aes(x=Date, y=y_hat), color = 'firebrick') +
             theme_bw() +
             scale_x_date(name = element_blank()) +
             scale_y_continuous(name = .y)
 )
-grid.arrange(grobs = estimates_plots)
+grid.arrange(grobs = estimates_plots, ncol = 1)
 
 # inspect models
 map(models, ~ summary(.))
 map(models, ~ AIC(.))
 map(models, ~ BIC(.))
-
 
 # create out-of-sample predictions and errors
 predictions <- map(models, ~ predict(., test_data))
