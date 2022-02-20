@@ -215,33 +215,16 @@ grid.arrange(grobs = predictions_plots, ncol = 1)
 
 pred_df <- data.frame(matrix(unlist(predictions), ncol = length(predictions), byrow = FALSE))
 colnames(pred_df) <- names(models)
-pred_err_df <- data.frame(matrix(unlist(prediction_errors), ncol = length(prediction_errors), byrow = FALSE))
-colnames(pred_err_df) <- str_c(names(models), 'err', sep = '_')
-colnames(pred_err_df) <- c('T_err', 'S_err', 'TS_err', 'TSC_err')
 
 # serial correlation test of prediction erros
-pred_err_df_ext <- cbind(
-    pred_err_df,
-    rbind(NA, pred_err_df[1:(nrow(pred_err_df) - 1), ]),
-    rbind(NA, NA, pred_err_df[1:(nrow(pred_err_df) - 2), ]),
-    rbind(NA, NA, NA, pred_err_df[1:(nrow(pred_err_df) - 3), ])
-)
+prediction_errors_ext <- map(prediction_errors, ~ tibble(err = .,
+                                err_1 = dplyr::lag(., 1),
+                                err_2 = dplyr::lag(., 2),
+                                err_3 = dplyr::lag(., 3),
+                                err_4 = dplyr::lag(., 4)))
 
-colnames(pred_err_df_ext) <- c(
-    names(pred_err_df),
-    str_c(names(pred_err_df), '1', sep = '_'),
-    str_c(names(pred_err_df), '2', sep = '_'),
-    str_c(names(pred_err_df), '3', sep = '_')
-)
+autocorrtest_formula <- formula(err ~ err_1 + err_2 + err_3)
 
-autocorrtest_formulas <- 
-    list(
-        T_err_autocorr = formula(T_err ~ T_err_1 + T_err_2 + T_err_3),
-        S_err_autocorr = formula(S_err ~ S_err_1 + S_err_2 + S_err_3),
-        `T + S_err_autocorr` = formula(TS_err ~ TS_err_1 + TS_err_2 + TS_err_3),
-        `T + S + C_err_autocorr` = formula(TSC_err ~ TSC_err_1 + TSC_err_2 + TSC_err_3)
-    )
-
-autocorrtest_models <- map(autocorrtest_formulas, ~ lm(., pred_err_df_ext))
+autocorrtest_models <- map(prediction_errors_ext, ~ lm(autocorrtest_formula, data = .))
 map(autocorrtest_models, ~ summary(.))
 stargazer(autocorrtest_models)
