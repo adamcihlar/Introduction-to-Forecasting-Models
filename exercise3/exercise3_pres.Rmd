@@ -24,23 +24,32 @@ As the first step it is a good idea to clear and setup the environment.
 ```{r, results='hide'}
 rm(list = ls())
 dev.off()
-setwd('C:/Users/Adam Cihlář/Desktop/materiály/ForecastingModels/assignments/exercise3')
 ```
 
 4. Load all necessary packages
 
 ```{r, results='hide', warning=FALSE, message=FALSE}
 library(tidyverse)
-library(readxl)
+library(RCurl)
 library(mltools)
 library(data.table)
 library(gridExtra)
 library(stargazer)
 ```
 
+``` {r, results='hide', echo=FALSE}
+library(knitr)
+```
 
-```{r}
-data <- read_xls(path = '../data/Sales new cars US.xls', skip = 10) %>%
+<br>
+
+### Load data
+
+1. Load data from github
+2. Add all derived columns
+
+```{r, message=FALSE}
+data <- read_csv(file = 'https://raw.githubusercontent.com/adamcihlar/IntroductionToForecastingModels/main/data_presentation/sales_new_cars_US.csv', skip = 10) %>%
     mutate(observation_date = as.Date(observation_date),
            m = lubridate::month(observation_date),
            time_index = c(1:nrow(.)),
@@ -54,8 +63,256 @@ data <- read_xls(path = '../data/Sales new cars US.xls', skip = 10) %>%
            y_13 = dplyr::lag(y, n = 13),
            )
 
+# the onehot encoding requires the column to be a factor
 data$m <- as.factor(data$m)
 data <- as_tibble(one_hot(as.data.table(data)))
 
 head(data)
 ```
+
+<br>
+
+### Plot the original time series
+```{r, warning=FALSE, fig.align='center',out.extra='angle=90'}
+data %>% ggplot(mapping = aes(x = observation_date, y = TOTALNSA, group = 1)) +
+        geom_line(color = 'darkblue') +
+        theme_bw() +
+        scale_x_date(
+            name = element_blank(), 
+            date_minor_breaks = "1 year", 
+            limits = c(as.Date("1976-01-01"), as.Date("2022-01-01"))) +
+        scale_y_continuous(limits = c(0, max(data$TOTALNSA)*1.1),
+                           name = element_blank())
+```
+
+<br>
+
+### Split to train and test data (in-sample and out-of-sample)
+Using the *observation_date* column we can filter the dataset and save as a new ones - create training and testing datasets.
+```{r}
+train_data <- data %>%
+    filter(observation_date < '2015-01-01') %>%
+    drop_na()
+
+test_data <- data %>%
+    filter(observation_date >= '2015-01-01')
+```
+
+<br>
+
+### Specify models
+In this step we specify formulas for all the models.
+```{r}
+# formula trend only
+trend_formula <- 'TOTALNSA ~ time_index + time_index_2'
+
+# formula seasonality
+form <- str_c(unlist(colnames(train_data)[4:13]), colapse = ' + ')
+season_formula <- str_c(
+    c('TOTALNSA ~ ' , str_c(form, collapse = ''), names(train_data)[14]), 
+    collapse = '')
+
+# formula trend + seasonality
+trend_season_formula <- str_c(season_formula, 'time_index', 'time_index_2', sep = ' + ')
+model_to_determine_AR <- lm(trend_season_formula, data = train_data)
+```
+
+The lagged variables are selected using autocorrelation and partial autocorrelation functions of residuals from Trend + Season model.
+``` {r}
+# formula trend + seasonality + cycle (AR)
+# inspect the residuals to determine AR process
+acf(model_to_determine_AR$residuals)
+pacf(model_to_determine_AR$residuals)
+# use AR 4 process + 12 and 13 (makes sense with the monthly data)
+trend_season_cycle_formula <- str_c(trend_season_formula, 'y_1', 'y_2', 'y_3', 'y_4', 'y_12', 'y_13',
+                                    sep = ' + ')
+```
+
+All formulas are defined, let's connect them to one list.
+``` {r}
+formulas <- list(
+    `T` = trend_formula,
+    `S` = season_formula,
+    `T+S` = trend_season_formula,
+    `T+S+C` = trend_season_cycle_formula
+)
+```
+<br>
+
+### Estimate the models
+Since we have specified all the models in the previous step and we have the data ready, we can just call the estimation procedure on the list of our formulas.
+```{r}
+models <- map(formulas, ~ lm(., train_data))
+summary(models[[1]])
+```
+<br>
+
+### Exporting results to Latex
+A very convenient way to write academical papers is using Latex. In R we have a package that can export tables and models estimations into Latex code, so we don't need to bother with rewriting the values and formatting the results.
+```{r, results=FALSE}
+stargazer(models)
+```
+<br>
+
+### Analyze the models
+To be able to analyze the results easily we can extract the values of interest from the estimates. In this chunk of code we get true, fitted and residual values for each model into a separate table.
+``` {r}
+true_est_res <- map(models, ~ tibble(
+    Date = train_data$observation_date[(length(train_data$observation_date)-length(.$residuals)+1):length(train_data$observation_date)],
+    y = .$model$TOTALNSA,
+    y_hat = .$fitted.values,
+    e = .$residuals)
+    )
+
+head(true_est_res$T)
+```
+
+Now we are ready to plot fitted and true values, plot the residuals and their distribution,...
+```{r, warning=FALSE, fig.align='center',out.extra='angle=90'}
+estimates_plots <- map2(true_est_res, names(true_est_res),
+    ~ ggplot(data = .x, mapping = aes(x=Date, y=y, group = 1)) +
+            geom_line(color = 'navyblue', size = 1) +
+            geom_line(mapping = aes(x=Date, y=y_hat), color = 'firebrick') +
+            theme_bw() +
+            scale_x_date(name = element_blank()) +
+            scale_y_continuous(name = .y)
+)
+grid.arrange(grobs = estimates_plots, ncol = 1)
+```
+
+... and have a look on the fit metrics of the models.
+``` {r}
+fit_metrics <- rbind(
+    map_dbl(models, ~ AIC(.)),
+    map_dbl(models, ~ BIC(.))
+)
+rownames(fit_metrics) <- c('AIC', 'BIC')
+```
+<br>
+
+#### Fit metrics
+``` {r echo=FALSE, results='asis'}
+kable(fit_metrics)
+```
+<br>
+
+### Out-of-sample predictions
+By applying *predict* function on our models and supplying it with new data, we can easily get predictions for our test dataset
+``` {r}
+predictions <- map(models, ~ predict(., test_data))
+prediction_errors <- map(predictions, ~ . - test_data$TOTALNSA)
+```
+
+and calculate the prediction metrics. 
+``` {r, results='hide'}
+calculate_mae <- function(errors) {
+    return(mean(abs(errors)))
+}
+calculate_rmse <- function(errors) {
+    return((mean(errors^2))^(1/2))
+}
+calculate_mape <- function(y_true, y_pred) {
+    return(mean(abs(y_pred - y_true) / y_true))
+}
+
+prediction_metrics <- rbind(
+    unlist(map(prediction_errors, ~ calculate_mae(.))),
+    unlist(map(prediction_errors, ~ calculate_rmse(.))),
+    unlist(map(predictions, ~ calculate_mape(test_data$TOTALNSA, .)))
+)
+rownames(prediction_metrics) <- c('MAE', 'RMSE', 'MAPE')
+
+prediction_metrics
+```
+<br>
+
+#### Prediction metrics
+``` {r echo=FALSE, results='asis'}
+kable(prediction_metrics)
+```
+<br>
+
+### Prediction errors analysis
+Now it is time to inspect the prediction errors in more detailed way.
+We would like to see if the residuals have normal distribution and if there is any residual serial correlation.
+
+Firstly, we will test the normality.
+
+``` {r, warning=FALSE, message=FALSE}
+prediction_errors_normality <- rbind(
+    map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$statistic),
+    map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$p.value)
+)
+rownames(prediction_errors_normality) <- c('Statistic', 'p-value')
+```
+<br>
+
+#### Jarque-Bera tests of normality
+``` {r echo=FALSE, results='asis'}
+kable(prediction_errors_normality)
+```
+
+Secondly, let's plot the histograms of the prediction errors together with the approximation of the density function of the predictions errors if they were normally distributed.
+
+To get the approximated values of the normal distribution, we will create a function so we do not need to repeat the same code many times and just call the function.
+
+``` {r}
+.get_norm_dist_approx <- function(data) {
+    normdist <- data_frame(
+        w = seq(
+            from = min(data), 
+            to = max(data), 
+            length.out = length(data)
+            ), 
+        z = map_dbl(w, ~ dnorm(.,
+                               mean = mean(data, na.rm = TRUE),
+                               sd = sd(data, na.rm = TRUE)))
+        )
+}
+```
+
+The only argument of the function is the data and it returns the density approximation. Now we can apply the function on our prediction errors and plot it.
+
+``` {r, warning=FALSE, fig.align='center',out.extra='angle=90'}
+prediction_errors_norm <- map(prediction_errors, ~ .get_norm_dist_approx(.))
+prediction_errors_distributions <- map2(prediction_errors, prediction_errors_norm,
+     ~ .x %>%
+         as_tibble() %>%
+         ggplot(aes(x = value)) +
+         geom_histogram(aes(y = ..density..),
+                        bins = 61, alpha=0.8, fill='firebrick', colour='black') +
+         geom_line(data = .y,
+                   aes(x = w, y = z),
+                   color = "darkred",
+                   size = 1) +
+         geom_vline(xintercept = 0, color = 'orange', linetype = 'longdash', size = 1.02) +
+         theme_bw() +
+         theme(axis.title.x=element_blank()) +
+         scale_x_continuous(limits = c(-600, 600))
+)
+prediction_errors_distributions <- map2(prediction_errors_distributions, c('T', 'S', 'T + S', 'T + S + C'),
+                                        ~ .x + scale_y_continuous(name = .y))
+
+grid.arrange(grobs = prediction_errors_distributions, ncol = 1)
+```
+
+### Plotting the predictions
+Finally, let's have a look on the predictions vs true values in charts.
+
+``` {r, warning=FALSE, fig.align='center',out.extra='angle=90'}
+predictions_dfs <- map(predictions, ~ tibble(pred = ., Date = test_data$observation_date, y_true = test_data$y))
+predictions_plots <- map2(predictions_dfs, names(predictions_dfs),
+    ~ ggplot(data = .x, mapping = aes(x=Date, y=y_true, group = 1)) +
+            geom_line(color = 'navyblue', size=1.01) +
+            geom_line(mapping = aes(x=Date, y=pred), color = 'skyblue3') +
+            theme_bw() +
+            scale_x_date(
+                name = element_blank(), 
+                date_minor_breaks = "1 year", 
+                limits = c(as.Date("2015-01-01"), as.Date("2022-01-01"))) +
+            scale_y_continuous(name = .y)
+)
+
+grid.arrange(grobs = predictions_plots, ncol = 1)
+```
+
