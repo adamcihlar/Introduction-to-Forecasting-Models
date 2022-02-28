@@ -1,0 +1,61 @@
+---
+title: "Exercise 3: Trends, Seasons, Cycles"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+*This document serves as a presentation of exercise 3 for course Introduction to Forecasting Models.
+The code provided in this document matches the source code of the solution itself.*
+
+<br>
+
+### Setup environment
+
+As the first step it is a good idea to clear and setup the environment.
+
+1. Delete all variables
+2. Reset the GUI for plotting
+3. Set the path to match the location of the source code
+<br>
+```{r, results='hide'}
+rm(list = ls())
+dev.off()
+setwd('C:/Users/Adam Cihlář/Desktop/materiály/ForecastingModels/assignments/exercise3')
+```
+
+4. Load all necessary packages
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+library(tidyverse)
+library(readxl)
+library(mltools)
+library(data.table)
+library(gridExtra)
+library(stargazer)
+```
+
+
+```{r}
+data <- read_xls(path = '../data/Sales new cars US.xls', skip = 10) %>%
+    mutate(observation_date = as.Date(observation_date),
+           m = lubridate::month(observation_date),
+           time_index = c(1:nrow(.)),
+           time_index_2 = time_index^2,
+           y = TOTALNSA,
+           y_1 = dplyr::lag(y, n = 1),
+           y_2 = dplyr::lag(y, n = 2),
+           y_3 = dplyr::lag(y, n = 3),
+           y_4 = dplyr::lag(y, n = 4),
+           y_12 = dplyr::lag(y, n = 12),
+           y_13 = dplyr::lag(y, n = 13),
+           )
+
+data$m <- as.factor(data$m)
+data <- as_tibble(one_hot(as.data.table(data)))
+
+head(data)
+```
