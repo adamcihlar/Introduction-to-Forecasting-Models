@@ -19,14 +19,13 @@ As the first step it is a good idea to clear and setup the environment.
 
 1. Delete all variables
 2. Reset the GUI for plotting
-3. Set the path to match the location of the source code
 <br>
 ```{r, results='hide'}
 rm(list = ls())
 dev.off()
 ```
 
-4. Load all necessary packages
+3. Load all necessary packages
 
 ```{r, results='hide', warning=FALSE, message=FALSE}
 library(tidyverse)
@@ -45,7 +44,7 @@ library(knitr)
 
 ### Load data
 
-1. Load data from github
+1. Load data (from github)
 2. Add all derived columns
 
 ```{r, message=FALSE}
