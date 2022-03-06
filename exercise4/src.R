@@ -119,12 +119,12 @@ arma_models <- map2(
 
 stargazer(arma_models)
 
-dy <- train_data$dy
-arma_models <- map2(
-    specs_arma$orders, specs_arma$fixed,
-    ~ arima(dy, order = .x, fixed = .y)
+fit_metrics <- rbind(
+    map_dbl(arma_models, ~ AIC(.)),
+    map_dbl(arma_models, ~ BIC(.))
 )
-
+rownames(fit_metrics) <- c('AIC', 'BIC')
+stargazer(fit_metrics, summary = FALSE, rownames = TRUE)
 
 # predictions
 predict_arima <- function(model, newdata_ts, nsteps = 1) {
@@ -140,12 +140,29 @@ predict_arima <- function(model, newdata_ts, nsteps = 1) {
     }
     
     refit <- Arima(orig_new_data_combined, model = model)  
-    prediction <- predict(refit, n.ahead = 1, se.fit = FALSE)
+    prediction <- predict(refit, n.ahead = nsteps, se.fit = FALSE)
     
     return(prediction)
 }
 
-predict_arima(model = arma_models$AR1, newdata_ts = test_data$dy[1])
+predict_recursive_arima <- function(model, newdata_full_ts) {
+    predictions <- map_dbl(
+        seq_along(newdata_full_ts),
+        ~ predict_arima(model = model, newdata_ts = newdata_full_ts[1:.], nsteps = nsteps)
+        )
+    return(predictions)
+}
+    
+predict_arima(model = arma_models$AR1_MA8_15, newdata_ts = test_data$dy, nsteps = 2)
+predict_recursive_arima(model = arma_models$AR1_MA8_15, newdata_full_ts = test_data$dy)
 
+predictions <- map(
+    arma_models,
+    ~ predict_recursive_arima(model = ., newdata_full_ts = test_data$dy)
+)
+
+prediction_errors <- map(
+    predictions, ~ . - test_data$dy
+)
 
 
