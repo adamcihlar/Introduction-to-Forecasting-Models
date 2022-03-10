@@ -142,27 +142,111 @@ predict_arima <- function(model, newdata_ts, nsteps = 1) {
     refit <- Arima(orig_new_data_combined, model = model)  
     prediction <- predict(refit, n.ahead = nsteps, se.fit = FALSE)
     
-    return(prediction)
+    return(prediction[nsteps])
 }
 
-predict_recursive_arima <- function(model, newdata_full_ts) {
+predict_recursive_arima <- function(model, newdata_full_ts, nsteps = 1) {
     predictions <- map_dbl(
         seq_along(newdata_full_ts),
         ~ predict_arima(model = model, newdata_ts = newdata_full_ts[1:.], nsteps = nsteps)
         )
-    return(predictions)
+    
+    predictions_full <- c(predict(model, n.ahead = nsteps, se.fit = FALSE), predictions)
+    
+    return(predictions_full)
 }
     
-predict_arima(model = arma_models$AR1_MA8_15, newdata_ts = test_data$dy, nsteps = 2)
-predict_recursive_arima(model = arma_models$AR1_MA8_15, newdata_full_ts = test_data$dy)
-
 predictions <- map(
     arma_models,
-    ~ predict_recursive_arima(model = ., newdata_full_ts = test_data$dy)
+    ~ predict_recursive_arima(model = ., newdata_full_ts = test_data$dy, nsteps = 1)
 )
+predictions <- map(predictions, ~ .[1:length(test_data$y)])
 
 prediction_errors <- map(
     predictions, ~ . - test_data$dy
 )
 
+# prediction metrics
+calculate_mae <- function(errors) {
+    return(mean(abs(errors)))
+}
+calculate_rmse <- function(errors) {
+    return((mean(errors^2))^(1/2))
+}
+calculate_mape <- function(y_true, y_pred) {
+    return(mean(abs(y_pred - y_true) / y_true))
+}
+
+# get back from differences to level values
+# MAPE will make much more sense
+level_predictions <- map(
+    predictions,
+    ~ c(train_data$y[nrow(train_data)], test_data$y[1:(nrow(test_data)-1)]) + .
+)
+
+prediction_metrics <- rbind(
+    unlist(map(prediction_errors, ~ calculate_mae(.))),
+    unlist(map(prediction_errors, ~ calculate_rmse(.))),
+    unlist(map(level_predictions, ~ calculate_mape(test_data$y, .)))
+)
+rownames(prediction_metrics) <- c('MAE', 'RMSE', 'MAPE')
+stargazer(prediction_metrics, summary = FALSE, rownames = TRUE)
+
+
+# inspect prediction errors
+.get_norm_dist_approx <- function(data) {
+    normdist <- data_frame(
+        w = seq(
+            from = min(data), 
+            to = max(data), 
+            length.out = length(data)
+            ), 
+        z = map_dbl(w, ~ dnorm(.,
+                               mean = mean(data, na.rm = TRUE),
+                               sd = sd(data, na.rm = TRUE)))
+        )
+}
+
+prediction_errors_norm <- map(prediction_errors, ~ .get_norm_dist_approx(.))
+prediction_errors_distributions <- map2(prediction_errors, prediction_errors_norm,
+     ~ .x %>%
+         as_tibble() %>%
+         ggplot(aes(x = value)) +
+         geom_histogram(aes(y = ..density..),
+                        bins = 61, alpha=0.8, fill='firebrick', colour='black') +
+         geom_line(data = .y,
+                   aes(x = w, y = z),
+                   color = "darkred",
+                   size = 1) +
+         geom_vline(xintercept = 0, color = 'orange', linetype = 'longdash', size = 1.02) +
+         theme_bw() +
+         theme(axis.title.x=element_blank()) +
+         scale_x_continuous(limits = c(-0.4, 0.4))
+)
+prediction_errors_distributions <- map2(prediction_errors_distributions, c('AR1', 'AR1 MA{8}', 'AR1 MA{15}', 'AR1 MA{8,15}'),
+                                        ~ .x + scale_y_continuous(name = .y))
+grid.arrange(grobs = prediction_errors_distributions, ncol = 1)
+
+prediction_errors_normality <- rbind(
+    map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$statistic),
+    map_dfc(prediction_errors, ~ tseries::jarque.bera.test(.)$p.value)
+)
+rownames(prediction_errors_normality) <- c('Statistic', 'p-value')
+stargazer(prediction_errors_normality, summary = FALSE, rownames = TRUE)
+
+
+# plot out-of-sample predictions
+predictions_dfs <- map(level_predictions, ~ tibble(pred = ., Date = test_data$observation_date, y_true = test_data$y))
+predictions_plots <- map2(predictions_dfs, c('AR1', 'AR1 MA{8}', 'AR1 MA{15}', 'AR1 MA{8,15}'),
+    ~ ggplot(data = .x, mapping = aes(x=Date, y=y_true, group = 1)) +
+            geom_line(color = 'navyblue', size=1.01) +
+            geom_line(mapping = aes(x=Date, y=pred), color = 'skyblue3') +
+            theme_bw() +
+            scale_x_date(
+                name = element_blank(), 
+                date_minor_breaks = "1 year", 
+                limits = c(as.Date("2016-01-01"), as.Date("2022-01-01"))) +
+            scale_y_continuous(name = .y)
+)
+grid.arrange(grobs = predictions_plots, ncol = 1)
 
