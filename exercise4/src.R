@@ -31,7 +31,7 @@ get_differences <- function(time_series) {
 
 data$dy <- get_differences(data$y)
 
-# plot the original time series
+# plot the differences
 data %>% ggplot(mapping = aes(x = observation_date, y = dy, group = 1)) +
         geom_line(color = 'darkblue') +
         theme_bw() +
@@ -49,7 +49,7 @@ test_data <- data %>%
 
 # check stationarity using acf
 autocor <- acf(train_data$y)
-
+autocor <- pacf(train_data$y)
 
 # check stationarity of differences timeseries using acf
 autocor <- train_data %>%
@@ -62,6 +62,11 @@ pautocor <- train_data %>%
     drop_na() %>%
     pacf()
 # based on acf and pacf 3 AR models selected - AR {1}, AR {1,3}, AR {1,3,12}
+
+#tibble(cor = c(autocor$acf[2:length(autocor$acf)]),
+#       x = seq_along(cor)) %>%
+#    ggplot(mapping = aes(x = x, y = cor)) +
+#    geom_col()
 
 specs <- list(
     orders = list(
