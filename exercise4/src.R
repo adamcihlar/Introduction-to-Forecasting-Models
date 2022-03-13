@@ -229,7 +229,8 @@ prediction_errors_distributions <- map2(prediction_errors, prediction_errors_nor
                    aes(x = w, y = z),
                    color = "darkred",
                    size = 1) +
-         geom_vline(xintercept = 0, color = 'orange', linetype = 'longdash', size = 1.02) +
+         geom_vline(xintercept = 0, color = 'orange', linetype = 'dashed', size = 1.02) +
+         geom_vline(xintercept = mean(.x, na.rm = TRUE), color = 'darkred', linetype = 'longdash', size = 1.02) +
          theme_bw() +
          theme(axis.title.x=element_blank()) +
          scale_x_continuous(limits = c(-0.4, 0.4))
