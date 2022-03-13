@@ -88,6 +88,12 @@ ar_models <- map2(
 
 stargazer(ar_models)
 
+fit_metrics_ar <- rbind(
+    map_dbl(ar_models, ~ AIC(.)),
+    map_dbl(ar_models, ~ BIC(.))
+)
+rownames(fit_metrics_ar) <- c('AIC', 'BIC')
+
 # AR {1} is best
 ar_model <- ar_models$AR1
 
