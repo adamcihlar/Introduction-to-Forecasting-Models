@@ -1,0 +1,192 @@
+
+rm(list = ls())
+
+library(tidyverse)
+library(lubridate)
+library(quantmod)
+library(vars)
+library(aTSA)
+library(tsDyn)
+# library(car)
+# library(gridExtra)
+# library(moments)
+# library(tsoutliers)
+# library(stargazer)
+
+
+# constants
+.from_date <- '2016-01-01'
+.to_date <- '2021-12-31'
+
+.stockmarket <- '^NDX'
+.symbols <- c('AAPL','GOOGL', 'MSFT')
+
+.train_test_split_date <- '2021-01-01'
+
+
+.select_and_filter <- function(title_df, from,  to, only_filter = FALSE) {
+    
+    if (only_filter) {
+        result <- title_df %>%
+            as_tibble(rownames = 'date') %>%                        # index to column
+            mutate(date = as_date(date),
+                   year_month = format(date, format = "%Y-%m")) %>% # convert
+            filter(date >= from, date <= to) %>%                    # filter
+            mutate(year_month = format(date, format = "%Y-%m-%d")) %>% # substract year-month
+            dplyr::select(date, year_month, contains('.Close'))
+        
+    } else {
+        
+        # get list of last trading days in months of the particular company
+        last_trading_day <- title_df %>%
+            as_tibble(rownames = 'date') %>%                        # index to column
+            mutate(date = as_date(date)) %>%                        # convert
+            dplyr::select(date, contains('.Close')) %>%                    # select cols
+            drop_na() %>%                                           # drop rows with missing values
+            filter(date >= from, date <= to) %>%                    # filter date
+            mutate(year_month = format(date, format = "%Y-%m-%d")) %>% # substract year-month
+            group_by(year_month) %>%                                # group by months
+            summarise(last_day = max(date))                         # get last days
+        
+        # inner join last days with values to get last  
+        result <- title_df %>%
+            as_tibble(rownames = 'date') %>%
+            mutate(date = as_date(date)) %>%
+            inner_join(last_trading_day, by = c('date' = 'last_day')) %>%
+            dplyr::select(date, year_month, contains('.Close'))
+    }
+    return(result)
+}
+
+.get_perc_growth <- function(title_df, r_index_j_m = 'j') {
+    
+    r_ind <- paste('r', r_index_j_m, sep = '_')
+    
+    result <- title_df %>%
+        mutate(diff_log = unlist(log(.[,3]) - dplyr::lag(log(.[,3]), n = 1))) %>%
+        dplyr::select(2:4)
+    
+    colnames(result) <- c('date', 'val_', r_ind)
+    result$date <- as.Date(result$date)
+    
+    return(result)
+}
+
+
+# 1) Get data
+
+getSymbols(Symbols = .symbols,
+           src = 'yahoo')
+
+titles <- ls(all.names = FALSE)
+
+full_list <- map(titles, ~ eval(as.name(.)))
+names(full_list) <- titles
+
+stock_returns <- map(full_list, ~ .select_and_filter(title_df = ., 
+                                                     from = .from_date, 
+                                                     to = .to_date, 
+                                                     only_filter = TRUE)) %>%
+    map(., ~ .get_perc_growth(title_df = .,
+                              r_index_j_m = '')) %>%
+    map(., drop_na)
+
+df <- inner_join(
+    stock_returns[1]$AAPL, stock_returns[2]$GOOGL, 
+    by = 'date', suffix = c('AAPL', 'GOOGL')
+) %>%
+    inner_join(stock_returns[3]$MSFT, by='date')
+colnames(df)[(ncol(df)-1):ncol(df)] <- c('val_MSFT', 'r_MSFT')
+
+train <- df %>% 
+    filter(date < .train_test_split_date)
+test <- df %>%
+    filter(date >= .train_test_split_date)
+
+
+# 2) Check stationarity
+adf_test <- function(timeseries) {
+    res <- list(adf.test(unlist(timeseries)));
+    return(res)
+}
+
+adf_tests <- map(
+    c(2:length(colnames(train))),
+    ~ adf_test(train[,.])
+)
+names(adf_tests) <- colnames(train)[2:length(colnames(train))]
+adf_tests
+# returns are stationary, level values not
+
+
+# 3) Estimate VAR on returns
+train_var <- train[, str_detect(colnames(train), '^r_')]
+test_var <- test[, str_detect(colnames(test), '^r_')]
+
+var_sel_aic <- VARselect(train_var, lag.max = 12)$selection[1]
+var_sel_bic <- VARselect(train_var, lag.max = 12)$selection[3]
+
+var_aic <- VAR(train_var, lag.max = 12, ic = 'AIC')
+var_bic <- VAR(train_var, lag.max = 12, ic = 'SC')
+
+
+# 4) Analyze models
+summary(var_aic)
+dev.off()
+plot(var_aic)
+var_aic$e <- fitted(var_aic) - var_aic$datamat[,1:ncol(fitted(var_aic))]
+
+summary(var_bic)
+dev.off()
+plot(var_bic)
+var_bic$e <- fitted(var_bic) - var_bic$datamat[,1:ncol(fitted(var_bic))]
+
+# Granger causalities
+map(colnames(var_aic$y), ~ causality(var_aic, .))
+pred_var_aic <- lineVar(train_var, var_sel_aic, model = 'VAR')
+map(colnames(var_bic$y), ~ causality(var_bic, .))
+pred_var_bic <- lineVar(train_var, var_sel_bic, model = 'VAR')
+
+# Impulse response functions
+irf_aic <- irf(var_aic)
+plot(irf_aic)
+irf_bic <- irf(var_bic)
+plot(irf_bic)
+
+# 3) Predictions
+
+predict_var <- function(var_model, new_data, n_ahead=1) {
+    index_start <- rownames(predict(var_model, new_data[1,], n.ahead=1))
+    len_new_data <- nrow(new_data)
+    column_names <- colnames(new_data)
+    predictions <- map(
+        1:nrow(new_data),
+        ~ predict(var_model, new_data[.,], n.ahead = n_ahead)
+        ) %>%
+        set_names(c(index_start:(as.integer(index_start) + len_new_data - 1)))
+    predictions <- predictions %>%
+        map(function(x) {x <- as.data.frame(x); colnames(x) <- column_names; x}) %>%
+        bind_rows() %>% 
+        as_tibble()
+    rownames(predictions) <- c(index_start:(as.integer(index_start) + len_new_data - 1))
+    return(predictions)
+}
+
+
+# prediction metrics
+calculate_mae <- function(errors) {
+    return(mean(abs(errors)))
+}
+calculate_rmse <- function(errors) {
+    return((mean(errors^2))^(1/2))
+}
+calculate_mape <- function(y_true, y_pred) {
+    return(mean(abs(y_pred - y_true) / y_true))
+}
+
+calculate_rmse(unlist(var_aic$e))
+prediction_metrics <- rbind(
+    unlist(map(prediction_errors, ~ calculate_mae(.))),
+    unlist(map(prediction_errors, ~ calculate_rmse(.))),
+    unlist(map(level_predictions, ~ calculate_mape(test_data$y, .)))
+)
