@@ -153,15 +153,16 @@ plot(irf_aic)
 irf_bic <- irf(var_bic)
 plot(irf_bic)
 
-# 3) Predictions
 
+# 3) Predictions
 predict_var <- function(var_model, new_data, n_ahead=1) {
-    index_start <- rownames(predict(var_model, new_data[1,], n.ahead=1))
+    n_lags <- var_model$lag
+    index_start <- rownames(predict(var_model, new_data[1:n_lags,], n.ahead=1))
     len_new_data <- nrow(new_data)
     column_names <- colnames(new_data)
     predictions <- map(
         1:nrow(new_data),
-        ~ predict(var_model, new_data[.,], n.ahead = n_ahead)
+        ~ predict(var_model, new_data[.:(.+n_lags-1),], n.ahead = n_ahead)
         ) %>%
         set_names(c(index_start:(as.integer(index_start) + len_new_data - 1)))
     predictions <- predictions %>%
@@ -171,7 +172,23 @@ predict_var <- function(var_model, new_data, n_ahead=1) {
     rownames(predictions) <- c(index_start:(as.integer(index_start) + len_new_data - 1))
     return(predictions)
 }
+# because of different lags, we need to create different X (inputs for test sets)
+test_aic <- rbind(
+    train_var[(nrow(train_var) - pred_var_aic$lag + 1):nrow(train_var),],
+    test_var
+)
+test_bic <- rbind(
+    train_var[(nrow(train_var) - pred_var_bic$lag + 1):nrow(train_var),],
+    test_var
+)
+predictions_aic <- drop_na(predict_var(pred_var_aic, test_aic)) %>%
+    .[1:(nrow(.)-1),]
+predictions_bic <- drop_na(predict_var(pred_var_bic, test_bic)) %>%
+    .[1:(nrow(.)-1),]
 
+# errors
+pred_err_aic <- predictions_aic - test_var
+pred_err_bic <- predictions_bic - test_var
 
 # prediction metrics
 calculate_mae <- function(errors) {
@@ -180,13 +197,28 @@ calculate_mae <- function(errors) {
 calculate_rmse <- function(errors) {
     return((mean(errors^2))^(1/2))
 }
-calculate_mape <- function(y_true, y_pred) {
-    return(mean(abs(y_pred - y_true) / y_true))
+calculate_mape <- function(y_true, y_pred, delta=0.00000001) {
+    return(mean(abs(y_pred - y_true) / (y_true + delta)))
 }
 
-calculate_rmse(unlist(var_aic$e))
-prediction_metrics <- rbind(
-    unlist(map(prediction_errors, ~ calculate_mae(.))),
-    unlist(map(prediction_errors, ~ calculate_rmse(.))),
-    unlist(map(level_predictions, ~ calculate_mape(test_data$y, .)))
+c(
+    calculate_mae(unlist(pred_err_aic)),
+    calculate_mae(unlist(pred_err_bic))
 )
+c(
+    calculate_rmse(unlist(pred_err_aic)),
+    calculate_rmse(unlist(pred_err_bic))
+)
+c(
+    calculate_mape(unlist(test_var), unlist(pred_err_aic)),
+    calculate_mape(unlist(test_var), unlist(pred_err_bic))
+)
+
+
+# 5) Forecast averaging
+# simple mean
+# trimmed mean (would need more models)
+# simple median (would need more models)
+# Least squares weights - regression of the true values on the predictions (can be w/ or w/o intercept)
+# MSE weights - each model has weight defined by w_i = (1/MSE_i) / (sum_over_all_models(1/MSE_j))
+
