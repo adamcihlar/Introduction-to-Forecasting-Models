@@ -7,6 +7,8 @@ library(quantmod)
 library(vars)
 library(aTSA)
 library(tsDyn)
+# library(ARDL)
+# library(dLagM)
 # library(car)
 # library(gridExtra)
 # library(moments)
@@ -72,6 +74,26 @@ library(tsDyn)
     return(result)
 }
 
+.set_colnames <- function(df, column_names) {
+    colnames(df) <- column_names
+    return(df)
+}
+
+.lag_tibble <- function(df, n_lags) {
+    df <- df[, colnames(df)!='date']
+    num_lags <- 10
+    train_lagged <- list()
+    for (i in 1:num_lags) {
+        train_one_lag <- as_tibble(rbind(
+            matrix(NA, nrow = i, ncol = ncol(df)),
+            as.matrix(df[1:(nrow(df)-i),])
+        )) %>% .set_colnames(str_c(colnames(df), i, sep = '_'))
+        train_lagged <- append(train_lagged, train_one_lag)
+    }
+    train_lagged <- as_tibble(reduce(train_lagged, cbind)) %>%
+        .set_colnames(names(train_lagged))
+    train_full <- cbind(df, train_lagged)
+}
 
 # 1) Get data
 
@@ -97,6 +119,8 @@ df <- inner_join(
 ) %>%
     inner_join(stock_returns[3]$MSFT, by='date')
 colnames(df)[(ncol(df)-1):ncol(df)] <- c('val_MSFT', 'r_MSFT')
+
+df_r <- df[, str_detect(colnames(df), '^r_')]
 
 train <- df %>% 
     filter(date < .train_test_split_date)
@@ -186,6 +210,13 @@ predictions_aic <- drop_na(predict_var(pred_var_aic, test_aic)) %>%
 predictions_bic <- drop_na(predict_var(pred_var_bic, test_bic)) %>%
     .[1:(nrow(.)-1),]
 
+# get level predictions from returns - just manually for apple 
+pred_appl_lev <- exp(
+    cumsum(predictions_aic)$r_AAPL + 
+    rep(as.double(log(train[nrow(train),'val_AAPL'])), each = nrow(predictions_aic))
+)
+pred_appl_lev_err <- pred_appl_lev - test$val_AAPL
+
 # errors
 pred_err_aic <- predictions_aic - test_var
 pred_err_bic <- predictions_bic - test_var
@@ -197,22 +228,40 @@ calculate_mae <- function(errors) {
 calculate_rmse <- function(errors) {
     return((mean(errors^2))^(1/2))
 }
-calculate_mape <- function(y_true, y_pred, delta=0.00000001) {
-    return(mean(abs(y_pred - y_true) / (y_true + delta)))
+calculate_mape <- function(y_true, y_pred, d=0.00000001) {
+    return(mean(c(unlist(abs((y_pred - y_true) / (y_true + d)))), na.rm = TRUE))
 }
 
-c(
-    calculate_mae(unlist(pred_err_aic)),
-    calculate_mae(unlist(pred_err_bic))
-)
-c(
-    calculate_rmse(unlist(pred_err_aic)),
-    calculate_rmse(unlist(pred_err_bic))
-)
-c(
-    calculate_mape(unlist(test_var), unlist(pred_err_aic)),
-    calculate_mape(unlist(test_var), unlist(pred_err_bic))
-)
+# returns
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_aic), ~ calculate_mae(unlist(pred_err_aic[,.]))),
+    map_dbl(1:ncol(pred_err_bic), ~ calculate_mae(unlist(pred_err_bic[,.]))),
+    .name_repair = c('unique')
+)) %>% 
+    .set_colnames(names(full_list)) %>%
+    .[1:(length(.)-1),]
+
+
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_aic), ~ calculate_rmse(unlist(pred_err_aic[,.]))),
+    map_dbl(1:ncol(pred_err_bic), ~ calculate_rmse(unlist(pred_err_bic[,.]))),
+    .name_repair = c('unique')
+)) %>% 
+    .set_colnames(names(full_list)) %>%
+    .[1:(length(.)-1),]
+
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_aic), ~ calculate_mape(test_var[,1], (pred_err_aic[,1]))),
+    map_dbl(1:ncol(pred_err_bic), ~ calculate_mape(test_var[,.], (pred_err_bic[,.]))),
+    .name_repair = c('unique')
+)) %>% 
+    .set_colnames(names(full_list)) %>%
+    .[1:(length(.)-1),]
+
+# levels
+calculate_mae(pred_appl_lev_err)
+calculate_rmse(pred_appl_lev_err)
+calculate_mape(test$val_AAPL, pred_appl_lev)
 
 
 # 5) Forecast averaging
@@ -222,3 +271,15 @@ c(
 # Least squares weights - regression of the true values on the predictions (can be w/ or w/o intercept)
 # MSE weights - each model has weight defined by w_i = (1/MSE_i) / (sum_over_all_models(1/MSE_j))
 
+
+# 6) VECM
+summary(ca.jo(train[,str_detect(colnames(train), '^val')]))
+
+vecm.model <- ca.jo(
+    train[,str_detect(colnames(train), '^val')], ecdet = 'const', 
+    type  = 'eigen', K = 5, spec = 'transitory',
+    season = 4, dumvar = NULL)
+
+summary(vecm.model)
+
+VECM()
