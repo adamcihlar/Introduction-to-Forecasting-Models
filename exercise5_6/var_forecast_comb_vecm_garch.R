@@ -7,10 +7,11 @@ library(quantmod)
 library(vars)
 library(aTSA)
 library(tsDyn)
+library(gridExtra)
+library(rugarch)
 # library(ARDL)
 # library(dLagM)
 # library(car)
-# library(gridExtra)
 # library(moments)
 # library(tsoutliers)
 # library(stargazer)
@@ -210,12 +211,14 @@ predictions_aic <- drop_na(predict_var(pred_var_aic, test_aic)) %>%
 predictions_bic <- drop_na(predict_var(pred_var_bic, test_bic)) %>%
     .[1:(nrow(.)-1),]
 
-# get level predictions from returns - just manually for apple 
-pred_appl_lev <- exp(
-    cumsum(predictions_aic)$r_AAPL + 
-    rep(as.double(log(train[nrow(train),'val_AAPL'])), each = nrow(predictions_aic))
-)
-pred_appl_lev_err <- pred_appl_lev - test$val_AAPL
+# get level predictions from returns
+pred_levels <- rbind(
+    train[nrow(train), str_detect(colnames(train), pattern = '^val_')],
+    test[1:(nrow(test)-1), str_detect(colnames(test), pattern = '^val_')]
+) * (predictions_aic + 1) %>% 
+    .set_colnames(c(str_c('pred', names(full_list), sep='_')))
+
+pred_err_levels <- pred_levels - test[,str_detect(colnames(test), '^val_')]
 
 # errors
 pred_err_aic <- predictions_aic - test_var
@@ -229,8 +232,10 @@ calculate_rmse <- function(errors) {
     return((mean(errors^2))^(1/2))
 }
 calculate_mape <- function(y_true, y_pred, d=0.00000001) {
-    return(mean(c(unlist(abs((y_pred - y_true) / (y_true + d)))), na.rm = TRUE))
+    return(mean((abs(y_pred - y_true) / (y_true + d))[,1], na.rm = TRUE))
 }
+y_true <- test_vecm[,1]
+y_pred <- pred_levels[,1]
 
 # returns
 as_tibble(rbind(
@@ -251,7 +256,7 @@ as_tibble(rbind(
     .[1:(length(.)-1),]
 
 as_tibble(rbind(
-    map_dbl(1:ncol(pred_err_aic), ~ calculate_mape(test_var[,1], (pred_err_aic[,1]))),
+    map_dbl(1:ncol(pred_err_aic), ~ calculate_mape(test_var[,.], (pred_err_aic[,.]))),
     map_dbl(1:ncol(pred_err_bic), ~ calculate_mape(test_var[,.], (pred_err_bic[,.]))),
     .name_repair = c('unique')
 )) %>% 
@@ -259,9 +264,189 @@ as_tibble(rbind(
     .[1:(length(.)-1),]
 
 # levels
-calculate_mae(pred_appl_lev_err)
-calculate_rmse(pred_appl_lev_err)
-calculate_mape(test$val_AAPL, pred_appl_lev)
+# returns
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_levels), ~ calculate_mae(unlist(pred_err_levels[,.])))
+)) %>% 
+    .set_colnames(names(full_list))
+
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_levels), ~ calculate_rmse(unlist(pred_err_levels[,.])))
+)) %>% 
+    .set_colnames(names(full_list))
+
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_levels), ~ calculate_mape(test[,str_detect(colnames(test), '^val_')][,.], (pred_levels[,.])))
+)) %>% 
+    .set_colnames(names(full_list))
+
+
+
+# 6) VECM
+train_vecm <- train[,str_detect(colnames(train), '^val')]
+test_vecm <- test[, str_detect(colnames(test), '^val')]
+
+predict_vecm <- function(vecm_model, new_data, n_ahead=1) {
+    # Prediction from VECM works by transforming VECM to VAR - lags(VECM)+1 == lags(VAR),
+    # so we need to add one more observation for the predict function.
+    # That is the only difference from predict_var function.
+    n_lags <- vecm_model$lag + 1
+    index_start <- rownames(predict(vecm_model, new_data[1:n_lags,], n.ahead=1))
+    len_new_data <- nrow(new_data)
+    column_names <- colnames(new_data)
+    predictions <- map(
+        1:nrow(new_data),
+        ~ predict(vecm_model, new_data[.:(.+n_lags-1),], n.ahead = n_ahead)
+    ) %>%
+        set_names(c(index_start:(as.integer(index_start) + len_new_data - 1)))
+    predictions <- predictions %>%
+        map(function(x) {x <- as.data.frame(x); colnames(x) <- column_names; x}) %>%
+        bind_rows() %>% 
+        as_tibble()
+    rownames(predictions) <- c(index_start:(as.integer(index_start) + len_new_data - 1))
+    return(predictions)
+}
+
+# get cointegration rank using the Johansen procedure
+coint_test <- ca.jo(
+    train_vecm, 
+    ecdet = 'none', # see docs
+    type  = 'eigen', # see docs
+    K = 2, # lag of VAR - must be at least 2, because lag(VECM) = lag(VAR) - 1
+    spec = 'transitory', # see docs
+    # season = 52,
+    dumvar = NULL)
+
+summary(coint_test)
+
+# estimate the VECM 
+vecm_model <- VECM(train_vecm, 
+                   lag=1,   # lag = lag(VAR) - 1
+                   r=1,     # r = cointegration test - result from ca.jo test
+                   estim = 'ML',
+                   LRinclude = 'none')
+summary(vecm_model)
+
+test_vecm_pred <- rbind(
+    train_vecm[(nrow(train_vecm) - vecm_model$lag):nrow(train_vecm),],
+    test_vecm
+)
+predictions_vecm <- drop_na(predict_vecm(vecm_model, new_data = test_vecm_pred)) %>%
+    .[1:(nrow(.)-1),]
+
+# plot historical data + forecast data
+vecm_true <- rbind(train_vecm, test_vecm)
+vecm_pred <- rbind(train_vecm, predictions_vecm) %>%
+    .set_colnames(str_c('pred', colnames(.), sep = '_'))
+vecm_df <- cbind(date = df$date, vecm_true, vecm_pred)
+
+p1 <- vecm_df %>%
+    ggplot(mapping = aes(x=date, y=val_AAPL)) +
+    geom_line()+
+    geom_line(mapping = aes(x=date, y=pred_val_AAPL), color='red')
+
+p2 <- vecm_df %>%
+    ggplot(mapping = aes(x=date, y=val_GOOGL)) +
+    geom_line()+
+    geom_line(mapping = aes(x=date, y=pred_val_GOOGL), color='red')
+
+p3 <- vecm_df %>%
+    ggplot(mapping = aes(x=date, y=val_MSFT)) +
+    geom_line()+
+    geom_line(mapping = aes(x=date, y=pred_val_MSFT), color='red')
+grid.arrange(p1, p2, p3)
+
+# plot forecast data
+vecm_true <- rbind(test_vecm)
+vecm_pred <- rbind(predictions_vecm) %>%
+    .set_colnames(str_c('pred', colnames(.), sep = '_'))
+vecm_df <- cbind(date = test$date, vecm_true, vecm_pred)
+
+p1 <- vecm_df %>%
+    ggplot(mapping = aes(x=date, y=val_AAPL)) +
+    geom_line()+
+    geom_line(mapping = aes(x=date, y=pred_val_AAPL), color='red')
+
+p2 <- vecm_df %>%
+    ggplot(mapping = aes(x=date, y=val_GOOGL)) +
+    geom_line()+
+    geom_line(mapping = aes(x=date, y=pred_val_GOOGL), color='red')
+
+p3 <- vecm_df %>%
+    ggplot(mapping = aes(x=date, y=val_MSFT)) +
+    geom_line()+
+    geom_line(mapping = aes(x=date, y=pred_val_MSFT), color='red')
+grid.arrange(p1, p2, p3)
+
+pred_err_vecm <- predictions_vecm - test_vecm
+
+# vecm prediction metrics
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_vecm), ~ calculate_mae(unlist(pred_err_vecm[,.])))
+)) %>% 
+    .set_colnames(names(full_list))
+
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_vecm), ~ calculate_rmse(unlist(pred_err_vecm[,.])))
+)) %>% 
+    .set_colnames(names(full_list))
+
+as_tibble(rbind(
+    map_dbl(1:ncol(pred_err_vecm), ~ calculate_mape(test_vecm[,.], (predictions_vecm[,.])))
+)) %>% 
+    .set_colnames(names(full_list))
+
+
+
+# 7) GARCH
+garch_spec_norm <- ugarchspec(
+    mean.model = list(armaOrder=c(0,0)), 
+    variance.model = list(model = 'sGARCH', garchOrder = c(1,1)),
+    distribution.model = 'norm')
+
+garch_spec_std <- ugarchspec(
+    mean.model = list(armaOrder=c(0,0)), 
+    variance.model = list(model = 'sGARCH', garchOrder = c(1,1)),
+    distribution.model = 'sstd')
+
+garch_spec_std_arma <- ugarchspec(
+    mean.model = list(armaOrder=c(1,1)), 
+    variance.model = list(model = 'sGARCH', garchOrder = c(1,1)),
+    distribution.model = 'sstd')
+
+garch_model_norm <- ugarchfit(data = df$r_AAPL, spec = garch_spec_norm, out.sample = 100)
+garch_model_norm
+
+garch_model_std <- ugarchfit(data = df$r_AAPL, spec = garch_spec_std, out.sample = 100)
+garch_model_std
+
+garch_model_std_arma <- ugarchfit(data = df$r_AAPL, spec = garch_spec_std_arma, out.sample = 0)
+garch_model_std_arma
+full_fitted_sigma_arma <- garch_model_std_arma@fit$sigma
+
+garch_model_std_full <- ugarchfit(data = df$r_AAPL, spec = garch_spec_std, out.sample = 0)
+full_fitted_sigma <- garch_model_std_full@fit$sigma
+
+# predict - no new data
+fitted_sigma <- tibble(val = garch_model_std@fit$sigma, type = 'fit')
+predicted_sigma <- tibble(
+    val = ugarchforecast(garch_model_std, n.ahead = 100)@forecast$sigmaFor,
+    type = 'predict'
+    )
+
+sigmas <- cbind(
+    rbind(fitted_sigma, predicted_sigma), 
+    date = df$date, 
+    full_fitted_sigma = full_fitted_sigma,
+    full_fitted_sigma_arma = full_fitted_sigma_arma
+    )
+
+sigmas %>%
+    ggplot(mapping = aes(x=date, y=val, color=type)) +
+    geom_line() +
+    geom_line(mapping = aes(x=date, y=full_fitted_sigma, color='green')) +
+    geom_line(mapping = aes(x=date, y=full_fitted_sigma_arma, color='firebrick'))
+
 
 
 # 5) Forecast averaging
@@ -271,15 +456,35 @@ calculate_mape(test$val_AAPL, pred_appl_lev)
 # Least squares weights - regression of the true values on the predictions (can be w/ or w/o intercept)
 # MSE weights - each model has weight defined by w_i = (1/MSE_i) / (sum_over_all_models(1/MSE_j))
 
+# least squares
+var_pred <- as_tibble(pred_levels) %>%
+    .set_colnames(str_c(colnames(vecm_pred), 'var', sep='_'))
+vecm_pred <- vecm_pred %>%
+    .set_colnames(str_c(colnames(vecm_pred), 'vecm', sep='_'))
+test_true <- test_vecm
 
-# 6) VECM
-summary(ca.jo(train[,str_detect(colnames(train), '^val')]))
+test_true_pred <- cbind(test_true, var_pred, vecm_pred)
 
-vecm.model <- ca.jo(
-    train[,str_detect(colnames(train), '^val')], ecdet = 'const', 
-    type  = 'eigen', K = 5, spec = 'transitory',
-    season = 4, dumvar = NULL)
+pred_comb_vars <- colnames(test_true_pred)
 
-summary(vecm.model)
+n_vars <- 3
+n_models <- 2
 
-VECM()
+prediction_formulas <- c()
+for (v in 1:n_vars) {
+    pred_form <- str_c(pred_comb_vars[v],
+        paste(
+            map_chr(c(1:(n_models)), ~ pred_comb_vars[(. * n_vars) + v]), collapse = ' + '
+        ),
+        sep = ' ~ '
+    )
+    prediction_formulas[v] <- pred_form
+}
+
+pred_comb_models <- map(
+    prediction_formulas,
+    ~ lm(., test_true_pred)
+)
+
+
+# MSE
