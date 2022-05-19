@@ -14,6 +14,8 @@ library(plotly)
 library(stargazer)
 library(aTSA)
 library(MASS)
+library(vars)
+library(tsDyn)
 
 
 
@@ -140,6 +142,37 @@ val_ <- function(dataframe) {
         .set_colnames(names(train_lagged))
     #train_full <- cbind(df, train_lagged)
     return(train_lagged)
+}
+
+select_VAR_lag_vars <- function(data, variable_of_interest, lag_max = 12, ic = 'SC', p_val_treshold = 0.1) {
+    train_var_elim <- data
+    
+    while (TRUE) {
+        var <- VAR(train_var_elim, lag.max = lag_max, ic = ic)
+        var_depvar <- var$varresult[variable_of_interest][[1]]
+        
+        if (ic == 'AIC') {
+            ic_index <- 1
+        } else if (ic == 'SC') {
+            ic_index <- 3
+        } else {
+            stop('Invalid criterion')
+        }
+        var_sel <- VARselect(train_var_elim, lag.max = 12)$selection[ic_index]
+        pred_var <- lineVar(train_var_elim, var_sel, model = 'VAR')
+        
+        min_p_vals <- summary(var_depvar)$coefficients[,4] %>%
+            .[1:(length(.)-1)] %>%
+            matrix(ncol = pred_var$lag) %>%
+            apply(1, min)
+        
+        if (max(min_p_vals) >= p_val_treshold) {
+            train_var_elim <- train_var_elim[,-which.max(min_p_vals)]
+        } else {
+            break
+        }
+    }
+    return(var)
 }
 
 calculate_mae <- function(errors) {
@@ -597,3 +630,29 @@ prediction_metrics <- rbind(
 )
 rownames(prediction_metrics) <- c('MAE', 'RMSE', 'MAPE')
 stargazer(prediction_metrics, summary = FALSE, rownames = TRUE)
+
+
+
+
+
+# 3) VARs
+data_var <- cbind(date = dataset$date, dr_(dataset))
+train_var <- data_var[data_var$date <= train_test_split_date,] %>%
+    dr_() %>%
+    drop_na()
+test_var <- data_var[data_var$date > train_test_split_date,] %>%
+    dr_()
+      
+# estimate VAR(12), compare to ARDL
+var_12 <- VAR(train_var, p = 12)
+summary(var_12)
+var_12_depvar <- var_12$varresult[dep_var][[1]]
+summary(var_12_depvar)
+summary(models$M4)
+
+# backward elimination + IC based lag selection 
+var_aic <- select_VAR_lag_vars(train_var, dep_var, 12, 'AIC')
+summary(var_aic)
+var_bic <- select_VAR_lag_vars(train_var, dep_var, 12, 'SC')
+summary(var_bic)
+
