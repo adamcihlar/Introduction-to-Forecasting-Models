@@ -656,3 +656,62 @@ summary(var_aic)
 var_bic <- select_VAR_lag_vars(train_var, dep_var, 12, 'SC')
 summary(var_bic)
 
+var_aic_res <- map(
+    var_aic$varresult,
+    ~ .$residuals
+)
+var_bic_res <- map(
+    var_aic$varresult,
+    ~ .$residuals
+)
+
+# residuals inspection
+var_aic_res_normality <- rbind(
+    map_dfc(var_aic$varresult, ~ tseries::jarque.bera.test(.$residuals)$statistic),
+    map_dfc(var_aic$varresult, ~ tseries::jarque.bera.test(.$residuals)$p.value)
+)
+rownames(var_aic_res_normality) <- c('Statistic', 'p-value')
+stargazer(var_aic_res_normality, summary = FALSE)
+
+var_aic_res_norm <- map(var_aic$varresult, ~ .get_norm_dist_approx(.$residuals))
+var_aic_residuals_distributions <- map2(var_aic$varresult, var_aic_res_norm,
+     ~ .x$residuals %>%
+         as_tibble() %>%
+         ggplot(aes(x = value)) +
+         geom_histogram(aes(y = ..density..),
+                        bins = 61, alpha=0.8, fill='firebrick', colour='black') +
+         geom_line(data = .y,
+                   aes(x = w, y = z),
+                   color = "darkred",
+                   size = 1) +
+         theme_bw() +
+         theme(axis.title.y=element_blank()) +
+         theme(axis.title.x=element_blank())
+)
+grid.arrange(grobs = var_aic_residuals_distributions)
+
+
+var_bic_res_normality <- rbind(
+    map_dfc(var_bic$varresult, ~ tseries::jarque.bera.test(.$residuals)$statistic),
+    map_dfc(var_bic$varresult, ~ tseries::jarque.bera.test(.$residuals)$p.value)
+)
+rownames(var_bic_res_normality) <- c('Statistic', 'p-value')
+stargazer(var_bic_res_normality, summary = FALSE)
+
+var_bic_res_norm <- map(var_bic$varresult, ~ .get_norm_dist_approx(.$residuals))
+var_bic_residuals_distributions <- map2(var_bic$varresult, var_bic_res_norm,
+     ~ .x$residuals %>%
+         as_tibble() %>%
+         ggplot(aes(x = value)) +
+         geom_histogram(aes(y = ..density..),
+                        bins = 61, alpha=0.8, fill='firebrick', colour='black') +
+         geom_line(data = .y,
+                   aes(x = w, y = z),
+                   color = "darkred",
+                   size = 1) +
+         theme_bw() +
+         theme(axis.title.y=element_blank()) +
+         theme(axis.title.x=element_blank())
+)
+grid.arrange(grobs = var_bic_residuals_distributions)
+
