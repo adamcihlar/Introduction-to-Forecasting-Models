@@ -4,3 +4,4 @@ Assignments for course taken at Inland Norway University of Applied Sciences
 2. Regression Analysis
 3. Trend, Seasonality, Cycles
 4. ARMA Models
+5. VAR, GARCH, VECM
